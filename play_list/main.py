@@ -9,22 +9,58 @@ import time
 # متغير للتوقف عن التحميل
 stop_flag = False
 
-# Function to download a single video
-def download_video(video_url, save_path, quality, index):
-    ydl_opts = {
-        'format': 'best' if quality == 'High' else 'worst' if quality == 'Low' else 'b[height<=720]',
-        'outtmpl': os.path.join(save_path, f'{index:02d} - %(title)s.%(ext)s'),
-        'quiet': True,
+# دالة للبحث عن أقرب جودة أعلى من الجودة المحددة
+def get_best_available_format(available_formats, selected_quality):
+    quality_map = {
+        '144p': 144,
+        '240p': 240,
+        '360p': 360,
+        '480p': 480,
+        '720p': 720,
+        '1080p': 1080,
+        '1440p': 1440,
+        '2160p': 2160
     }
 
+    selected_height = quality_map.get(selected_quality, 360)  # الافتراضية 360p
+
+    available_heights = []
+    for fmt in available_formats:
+        if 'height' in fmt and fmt['ext'] == 'mp4':
+            available_heights.append((fmt['height'], fmt['format_id']))
+
+    available_heights.sort()
+
+    for height, format_id in available_heights:
+        if height >= selected_height:
+            return format_id
+
+    return available_heights[-1][1] if available_heights else 'best'
+
+
+# دالة لتحميل الفيديو
+def download_video(video_url, save_path, quality, index):
     try:
+        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+            info_dict = ydl.extract_info(video_url, download=False)
+            formats = info_dict.get('formats', [])
+
+        best_format = get_best_available_format(formats, quality)
+
+        ydl_opts = {
+            'format': best_format,
+            'outtmpl': os.path.join(save_path, f'{index:02d} - %(title)s.%(ext)s'),
+            'quiet': True,
+            'noplaylist': True  # عدم تحميل قائمة التشغيل بأكملها عند طلب فيديو واحد
+        }
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info_dict = ydl.extract_info(video_url, download=True)
             return info_dict.get('title', 'Unknown Title')
     except Exception as e:
         return f"Failed to download: {e}"
 
-# Function to download a playlist
+# دالة لتحميل قائمة التشغيل
 def download_playlist():
     global stop_flag
     playlist_url = entry_url.get()
@@ -36,6 +72,9 @@ def download_playlist():
         return
     if not save_path:
         messagebox.showerror("Error", "Please select a folder to save videos.")
+        return
+    if not quality:
+        messagebox.showerror("Error", "Please select a quality format.")
         return
 
     try:
@@ -98,66 +137,42 @@ def stop_download():
 # Create the main window
 root = tk.Tk()
 root.title("YouTube Playlist Downloader")
-
-# إضافة الأيقونة المخصصة
-root.iconbitmap('icon/download.ico')  # تأكد من وجود ملف الأيقونة icon.ico في نفس المجلد
-
-# تحديد الحد الأدنى لحجم النافذة
-root.minsize(800, 600)
-
-# إعدادات النافذة
 root.geometry("800x600")
 root.config(bg="#f5f5f5")
 
 # Variables
 folder_path = tk.StringVar()
-quality_var = tk.StringVar(value="High")
+quality_var = tk.StringVar()
 
-# Fonts and styles
-heading_font = font.Font(family="Helvetica", size=16, weight="bold")
-button_font = font.Font(family="Helvetica", size=12)
-label_font = font.Font(family="Helvetica", size=12)
+# قائمة الجودات القياسية
+standard_qualities = ['1080p', '720p', '480p', '360p', '240p', '144p']
 
 # Layout
-root.columnconfigure(1, weight=1)
-root.rowconfigure(6, weight=1)
+tk.Label(root, text="YouTube Playlist URL:", bg="#f5f5f5").pack()
+entry_url = tk.Entry(root)
+entry_url.pack()
 
-# URL Input
-tk.Label(root, text="YouTube Playlist URL:", font=label_font, bg="#f5f5f5", fg="#34495e").grid(row=0, column=0, pady=5, padx=5, sticky="w")
-entry_url = tk.Entry(root, font=label_font, bg="#ecf0f1", fg="#2c3e50")
-entry_url.grid(row=0, column=1, pady=5, padx=5, sticky="ew")
+tk.Label(root, text="Select Standard Quality:").pack()
+quality_menu = ttk.Combobox(root, textvariable=quality_var, values=standard_qualities)
+quality_menu.pack()
+quality_menu.set('720p')
 
-# Folder Selection
-tk.Label(root, text="Save Folder:", font=label_font, bg="#f5f5f5", fg="#34495e").grid(row=1, column=0, pady=5, padx=5, sticky="w")
-entry_folder = tk.Entry(root, textvariable=folder_path, font=label_font, bg="#ecf0f1", fg="#2c3e50")
-entry_folder.grid(row=1, column=1, pady=5, padx=5, sticky="ew")
-tk.Button(root, text="Browse", font=button_font, bg="#3498db", fg="white", command=browse_folder).grid(row=1, column=2, pady=5, padx=5)
+tk.Label(root, text="Save Folder:").pack()
+tk.Entry(root, textvariable=folder_path).pack()
+tk.Button(root, text="Browse", command=browse_folder).pack()
 
-# Quality Selection
-tk.Label(root, text="Select Quality:", font=label_font, bg="#f5f5f5", fg="#34495e").grid(row=2, column=0, pady=5, padx=5, sticky="w")
-quality_menu = ttk.Combobox(root, textvariable=quality_var, values=["Low", "Medium", "High"], font=label_font)
-quality_menu.grid(row=2, column=1, pady=5, padx=5, sticky="w")
+tk.Button(root, text="Download", command=start_download_in_thread).pack()
+tk.Button(root, text="Stop", command=stop_download).pack()
 
 # Progress Bar
 progress_bar = ttk.Progressbar(root, orient="horizontal", length=300, mode="determinate")
-progress_bar.grid(row=3, column=0, columnspan=2, pady=10, padx=10, sticky="ew")
+progress_bar.pack()
+progress_label = tk.Label(root, text="0%")
+progress_label.pack()
 
-# Progress Label
-progress_label = tk.Label(root, text="0%", font=label_font, bg="#f5f5f5", fg="#2c3e50")
-progress_label.grid(row=3, column=2, padx=10)
-
-# Control Buttons
-tk.Button(root, text="Download", font=button_font, bg="#1abc9c", fg="white", command=start_download_in_thread).grid(row=4, column=1, pady=5)
-tk.Button(root, text="Stop", font=button_font, bg="#e74c3c", fg="white", command=stop_download).grid(row=4, column=2, pady=5)
-
-# Listbox with Scrollbar
-list_frame = ttk.Frame(root)
-list_frame.grid(row=5, column=0, columnspan=3, sticky="nsew")
-scrollbar = tk.Scrollbar(list_frame)
-scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, font=("Helvetica", 10))
-listbox.pack(expand=True, fill=tk.BOTH)
-scrollbar.config(command=listbox.yview)
+# Listbox for logs
+listbox = tk.Listbox(root)
+listbox.pack(fill=tk.BOTH, expand=True)
 
 # Run the application
 root.mainloop()
