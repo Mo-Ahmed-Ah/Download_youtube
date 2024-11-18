@@ -3,66 +3,80 @@ import yt_dlp
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import threading
-from tkinter import font
-import time
+from concurrent.futures import ThreadPoolExecutor
+import re
 
 # متغير للتوقف عن التحميل
 stop_flag = False
+executor = ThreadPoolExecutor(max_workers=4)
 
-# دالة للبحث عن أقرب جودة أعلى من الجودة المحددة
-def get_best_available_format(available_formats, selected_quality):
-    quality_map = {
-        '144p': 144,
-        '240p': 240,
-        '360p': 360,
-        '480p': 480,
-        '720p': 720,
-        '1080p': 1080,
-        '1440p': 1440,
-        '2160p': 2160
-    }
+# دالة لإزالة الأحرف غير الصالحة من أسماء الملفات
+def sanitize_filename(filename):
+    return re.sub(r'[\\/*?:"<>|]', "", filename)
 
-    selected_height = quality_map.get(selected_quality, 360)  # الافتراضية 360p
+# دالة للتحقق من صلاحية المسار
+def is_valid_path(path):
+    """التحقق إذا كان المسار صالحًا وقابلًا للكتابة"""
+    return os.path.isdir(path) and os.access(path, os.W_OK)
 
-    available_heights = []
-    for fmt in available_formats:
-        if 'height' in fmt and fmt['ext'] == 'mp4':
-            available_heights.append((fmt['height'], fmt['format_id']))
+# دالة لتحديث شريط التقدم
+def update_progress(d):
+    """دالة للتحديث التقدم بناءً على حالة التحميل"""
+    if d['status'] == 'downloading':
+        progress = d.get('downloaded_bytes', 0) / d.get('total_bytes', 1) * 100
+        progress_bar['value'] = progress
+        progress_label.config(text=f"{progress:.2f}%")
+        root.update_idletasks()
+    elif d['status'] == 'finished':
+        progress_bar['value'] = 100
+        progress_label.config(text="100%")
+        root.update_idletasks()
 
-    available_heights.sort()
-
-    for height, format_id in available_heights:
-        if height >= selected_height:
-            return format_id
-
-    return available_heights[-1][1] if available_heights else 'best'
-
-
-# دالة لتحميل الفيديو
+# دالة لتحميل الفيديو باستخدام أفضل جودة للصوت والفيديو
 def download_video(video_url, save_path, quality, index):
     try:
-        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-            info_dict = ydl.extract_info(video_url, download=False)
-            formats = info_dict.get('formats', [])
+        # التحقق من صلاحية المسار
+        if not is_valid_path(save_path):
+            raise ValueError("The selected folder path is invalid or does not exist.")
+        
+        # تحديد الجودة بناءً على اختيار المستخدم
+        format_option = f"bestvideo[height<={quality[:-1]}]+bestaudio/best"
+        
+        # الحصول على اسم الفيديو
+        file_name = sanitize_filename(f'{index:02d} - %(title)s.mp4').replace(" ", "_")
+        
+        # إعدادات التحميل مع تحديد التنسيق MP4
+        file_path = os.path.join(save_path, file_name)
+        print(f"Saving to: {file_path}")  # Debugging statement
 
-        best_format = get_best_available_format(formats, quality)
+        # التأكد من أن المسار لا يحتوي على أي أحرف غير صالحة وأنه قصير بما يكفي
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
 
+        if len(file_path) > 255:
+            raise ValueError("The file path is too long.")
+
+        # إعدادات التحميل
         ydl_opts = {
-            'format': best_format,
-            'outtmpl': os.path.join(save_path, f'{index:02d} - %(title)s.%(ext)s'),
+            'format': format_option,
+            'outtmpl': file_path,  # تعيين الامتداد mp4
             'quiet': True,
-            'noplaylist': True  # عدم تحميل قائمة التشغيل بأكملها عند طلب فيديو واحد
+            'noplaylist': True,
+            'progress_hooks': [update_progress],
+            'forcejson': True,  # استخدام JSON لضمان سلاسة المعالجة
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info_dict = ydl.extract_info(video_url, download=True)
             return info_dict.get('title', 'Unknown Title')
     except Exception as e:
+        print(f"Download failed: {e}")  # Debugging statement
         return f"Failed to download: {e}"
 
 # دالة لتحميل قائمة التشغيل
 def download_playlist():
     global stop_flag
+    stop_flag = False
     playlist_url = entry_url.get()
     save_path = folder_path.get()
     quality = quality_var.get()
@@ -88,18 +102,14 @@ def download_playlist():
 
         for idx, video_url in enumerate(video_urls, start=1):
             if stop_flag:
-                listbox.insert(tk.END, "Download stopped.")
-                listbox.itemconfig(tk.END, {'bg': '#f39c12'})
-                listbox.yview(tk.END)
                 break
-
             title = download_video(video_url, save_path, quality, idx)
             listbox.insert(tk.END, f"{idx}. Downloaded: {title}")
             listbox.itemconfig(tk.END, {'bg': '#1abc9c'})
             listbox.yview(tk.END)
 
             progress = (idx / total_videos) * 100
-            animate_progress(progress)
+            progress_bar['value'] = progress
             progress_label.config(text=f"{progress:.2f}%")
             root.update_idletasks()
 
@@ -108,71 +118,72 @@ def download_playlist():
     except Exception as e:
         messagebox.showerror("Error", f"Failed to download playlist: {e}")
 
-# Animation for progress bar
-def animate_progress(progress):
-    current_value = progress_bar['value']
-    step = (progress - current_value) / 10
-    for i in range(10):
-        current_value += step
-        progress_bar['value'] = current_value
-        time.sleep(0.02)
-        root.update_idletasks()
-
-# Function to select a folder
+# دالة لاختيار المجلد
 def browse_folder():
     folder_selected = filedialog.askdirectory()
     folder_path.set(folder_selected)
 
-# Function to start download in a separate thread
+# دالة لبدء التحميل في سلسلة جديدة
 def start_download_in_thread():
     global stop_flag
     stop_flag = False
     threading.Thread(target=download_playlist).start()
 
-# Function to stop the download
+# دالة لإيقاف التحميل
 def stop_download():
     global stop_flag
     stop_flag = True
+    messagebox.showinfo("Stopped", "Download has been stopped.")
 
-# Create the main window
+# دالة لضبط مسار التحميل
+def adjust_path(path):
+    """ضبط المسار ليكون مسارًا صحيحًا وقابلًا للكتابة"""
+    if not is_valid_path(path):
+        # في حالة فشل المسار الأساسي، حاول حفظه في مجلد "المستندات" الخاص بالمستخدم
+        default_path = os.path.expanduser("~/Documents")
+        messagebox.showinfo("Path Issue", f"The selected path is invalid. Using default path: {default_path}")
+        return default_path
+    return path
+
+# إنشاء نافذة التطبيق الرئيسية
 root = tk.Tk()
 root.title("YouTube Playlist Downloader")
 root.geometry("800x600")
 root.config(bg="#f5f5f5")
 
-# Variables
+# المتغيرات
 folder_path = tk.StringVar()
 quality_var = tk.StringVar()
 
 # قائمة الجودات القياسية
 standard_qualities = ['1080p', '720p', '480p', '360p', '240p', '144p']
 
-# Layout
-tk.Label(root, text="YouTube Playlist URL:", bg="#f5f5f5").pack()
-entry_url = tk.Entry(root)
+# تصميم الواجهة
+tk.Label(root, text="YouTube Playlist URL:", bg="#f5f5f5").pack(pady=10)
+entry_url = tk.Entry(root, width=60)
 entry_url.pack()
 
-tk.Label(root, text="Select Standard Quality:").pack()
-quality_menu = ttk.Combobox(root, textvariable=quality_var, values=standard_qualities)
+tk.Label(root, text="Select Standard Quality:", bg="#f5f5f5").pack(pady=10)
+quality_menu = ttk.Combobox(root, textvariable=quality_var, values=standard_qualities, width=20)
 quality_menu.pack()
 quality_menu.set('720p')
 
-tk.Label(root, text="Save Folder:").pack()
-tk.Entry(root, textvariable=folder_path).pack()
-tk.Button(root, text="Browse", command=browse_folder).pack()
+tk.Label(root, text="Save Folder:", bg="#f5f5f5").pack(pady=10)
+tk.Entry(root, textvariable=folder_path, width=60).pack(pady=5)
+tk.Button(root, text="Browse", command=browse_folder).pack(pady=5)
 
-tk.Button(root, text="Download", command=start_download_in_thread).pack()
-tk.Button(root, text="Stop", command=stop_download).pack()
+tk.Button(root, text="Download", command=start_download_in_thread, width=20).pack(pady=10)
+tk.Button(root, text="Stop", command=stop_download, width=20).pack(pady=5)
 
-# Progress Bar
+# شريط التقدم
 progress_bar = ttk.Progressbar(root, orient="horizontal", length=300, mode="determinate")
-progress_bar.pack()
-progress_label = tk.Label(root, text="0%")
+progress_bar.pack(pady=20)
+progress_label = tk.Label(root, text="0%", bg="#f5f5f5")
 progress_label.pack()
 
-# Listbox for logs
-listbox = tk.Listbox(root)
-listbox.pack(fill=tk.BOTH, expand=True)
+# صندوق العرض للسجلات
+listbox = tk.Listbox(root, height=10, width=80, selectmode=tk.SINGLE)
+listbox.pack(fill=tk.BOTH, expand=True, pady=10)
 
-# Run the application
+# تشغيل التطبيق
 root.mainloop()
