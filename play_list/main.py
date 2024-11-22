@@ -3,12 +3,10 @@ import yt_dlp
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import threading
-from concurrent.futures import ThreadPoolExecutor
 import re
 
 # متغير للتوقف عن التحميل
 stop_flag = False
-executor = ThreadPoolExecutor(max_workers=4)
 
 # دالة لإزالة الأحرف غير الصالحة من أسماء الملفات
 def sanitize_filename(filename):
@@ -18,6 +16,16 @@ def sanitize_filename(filename):
 def is_valid_path(path):
     """التحقق إذا كان المسار صالحًا وقابلًا للكتابة"""
     return os.path.isdir(path) and os.access(path, os.W_OK)
+
+# دالة لضبط مسار التحميل
+def adjust_path(path):
+    """ضبط المسار ليكون مسارًا صحيحًا وقابلًا للكتابة"""
+    if not is_valid_path(path):
+        # في حالة فشل المسار الأساسي، حاول حفظه في مجلد "المستندات" الخاص بالمستخدم
+        default_path = os.path.expanduser("~/Documents")
+        messagebox.showinfo("Path Issue", f"The selected path is invalid. Using default path: {default_path}")
+        return default_path
+    return path
 
 # دالة لتحديث شريط التقدم
 def update_progress(d):
@@ -35,42 +43,33 @@ def update_progress(d):
 # دالة لتحميل الفيديو باستخدام أفضل جودة للصوت والفيديو
 def download_video(video_url, save_path, quality, index):
     try:
-        # التحقق من صلاحية المسار
-        if not is_valid_path(save_path):
-            raise ValueError("The selected folder path is invalid or does not exist.")
-        
+        save_path = adjust_path(save_path)
+
         # تحديد الجودة بناءً على اختيار المستخدم
         format_option = f"bestvideo[height<={quality[:-1]}]+bestaudio/best"
-        
+
         # الحصول على اسم الفيديو
         file_name = sanitize_filename(f'{index:02d} - %(title)s.mp4').replace(" ", "_")
-        
-        # إعدادات التحميل مع تحديد التنسيق MP4
         file_path = os.path.join(save_path, file_name)
-        print(f"Saving to: {file_path}")  # Debugging statement
 
-        # التأكد من أن المسار لا يحتوي على أي أحرف غير صالحة وأنه قصير بما يكفي
-        if not os.path.exists(save_path):
-            os.makedirs(save_path)
-
+        # التأكد من أن المسار لا يحتوي على أي أحرف غير صالحة
         if len(file_path) > 255:
             raise ValueError("The file path is too long.")
 
         # إعدادات التحميل
         ydl_opts = {
             'format': format_option,
-            'outtmpl': file_path,  # تعيين الامتداد mp4
+            'outtmpl': file_path,
             'quiet': True,
             'noplaylist': True,
             'progress_hooks': [update_progress],
-            'forcejson': True,  # استخدام JSON لضمان سلاسة المعالجة
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info_dict = ydl.extract_info(video_url, download=True)
             return info_dict.get('title', 'Unknown Title')
     except Exception as e:
-        print(f"Download failed: {e}")  # Debugging statement
+        print(f"Download failed: {e}")
         return f"Failed to download: {e}"
 
 # دالة لتحميل قائمة التشغيل
@@ -121,7 +120,10 @@ def download_playlist():
 # دالة لاختيار المجلد
 def browse_folder():
     folder_selected = filedialog.askdirectory()
-    folder_path.set(folder_selected)
+    if is_valid_path(folder_selected):
+        folder_path.set(folder_selected)
+    else:
+        messagebox.showerror("Invalid Path", "The selected folder is not writable or does not exist.")
 
 # دالة لبدء التحميل في سلسلة جديدة
 def start_download_in_thread():
@@ -134,16 +136,6 @@ def stop_download():
     global stop_flag
     stop_flag = True
     messagebox.showinfo("Stopped", "Download has been stopped.")
-
-# دالة لضبط مسار التحميل
-def adjust_path(path):
-    """ضبط المسار ليكون مسارًا صحيحًا وقابلًا للكتابة"""
-    if not is_valid_path(path):
-        # في حالة فشل المسار الأساسي، حاول حفظه في مجلد "المستندات" الخاص بالمستخدم
-        default_path = os.path.expanduser("~/Documents")
-        messagebox.showinfo("Path Issue", f"The selected path is invalid. Using default path: {default_path}")
-        return default_path
-    return path
 
 # إنشاء نافذة التطبيق الرئيسية
 root = tk.Tk()
